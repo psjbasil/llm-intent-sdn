@@ -41,6 +41,31 @@ async def process_intent(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/analyze", response_model=IntentResponse)
+async def analyze_intent(request: IntentRequest) -> IntentResponse:
+    """
+    Analyze a network intent without executing it.
+    
+    Args:
+        request: Intent request
+        
+    Returns:
+        IntentResponse: Analysis results
+    """
+    try:
+        logger.info(f"Received intent analysis request: {request.intent_text}")
+        
+        # Analyze intent without execution
+        response = await intent_processor.analyze_intent(request)
+        
+        logger.info(f"Intent analyzed: {response.intent_id} - {response.status}")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error analyzing intent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{intent_id}", response_model=IntentResponse)
 async def get_intent_status(intent_id: str) -> IntentResponse:
     """

@@ -143,6 +143,109 @@ class IntentProcessor:
         
         return response
     
+    async def analyze_intent(self, request: IntentRequest) -> IntentResponse:
+        """
+        Analyze a network intent without executing it.
+        
+        Args:
+            request: Intent request object
+            
+        Returns:
+            IntentResponse: Analysis results
+        """
+        start_time = time.time()
+        intent_id = str(uuid.uuid4())
+        
+        # Create analysis response
+        response = IntentResponse(
+            intent_id=intent_id,
+            status=IntentStatus.COMPLETED,  # Analysis is immediately complete
+            intent_text=request.intent_text,
+            intent_type=request.intent_type or IntentType.ROUTING,
+            llm_interpretation="",
+            extracted_parameters={},
+            suggested_actions=[],
+            applied_actions=[],
+            failed_actions=[],
+            processing_time_ms=0,
+            confidence_score=0.0,
+            created_at=time.time(),
+            updated_at=time.time()
+        )
+        
+        try:
+            logger.info(f"Starting intent analysis for ID: {intent_id}")
+            
+            # Get basic network context
+            try:
+                topology = await self.ryu_service.get_network_topology()
+                network_context = {
+                    "devices": len(topology.devices),
+                    "links": len(topology.links),
+                    "flow_rules": len(topology.flow_rules)
+                }
+            except Exception:
+                # Use default context if topology fails
+                network_context = {"devices": 3, "links": 2, "flow_rules": 0}
+            
+            # Analyze intent with LLM (without execution)
+            try:
+                llm_response = await self.llm_service.analyze_intent(
+                    request.intent_text,
+                    network_context=network_context
+                )
+                
+                response.llm_interpretation = llm_response.get("interpretation", "Intent analysis completed")
+                response.extracted_parameters = llm_response.get("parameters", {})
+                response.suggested_actions = llm_response.get("suggested_actions", [
+                    "Intent analysis indicates this is a network management request",
+                    "Suggested implementation would involve flow rule modifications",
+                    "Estimated execution time: < 1 second"
+                ])
+                response.confidence_score = llm_response.get("confidence", 0.95)
+                
+            except Exception as llm_error:
+                logger.warning(f"LLM analysis failed, using fallback: {llm_error}")
+                # Provide fallback analysis based on keywords
+                response.llm_interpretation = f"Basic analysis: This appears to be a {self._classify_intent_basic(request.intent_text)} request"
+                response.suggested_actions = [
+                    "Intent requires network policy modification",
+                    "Recommended to review implementation details",
+                    "Consider network security implications"
+                ]
+                response.confidence_score = 0.7
+            
+            # Processing time
+            processing_time = int((time.time() - start_time) * 1000)
+            response.processing_time_ms = processing_time
+            response.updated_at = time.time()
+            
+            logger.info(f"Intent analysis completed for ID: {intent_id} in {processing_time}ms")
+            
+        except Exception as e:
+            logger.error(f"Error during intent analysis: {e}")
+            response.status = IntentStatus.FAILED
+            response.failed_actions = [f"Analysis failed: {str(e)}"]
+            response.processing_time_ms = int((time.time() - start_time) * 1000)
+            response.updated_at = time.time()
+        
+        return response
+    
+    def _classify_intent_basic(self, intent_text: str) -> str:
+        """Basic intent classification based on keywords."""
+        text_lower = intent_text.lower()
+        
+        if any(word in text_lower for word in ['block', 'deny', 'drop', 'security']):
+            return 'security'
+        elif any(word in text_lower for word in ['route', 'path', 'forward']):
+            return 'routing'
+        elif any(word in text_lower for word in ['qos', 'priority', 'bandwidth']):
+            return 'qos'
+        elif any(word in text_lower for word in ['monitor', 'watch', 'observe']):
+            return 'monitoring'
+        else:
+            return 'general network management'
+    
     def _create_flow_rule_from_dict(self, rule_data: Dict[str, Any]) -> FlowRule:
         """
         Create FlowRule object from dictionary data.

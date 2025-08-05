@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 import uvicorn
 
@@ -39,11 +40,20 @@ def create_app() -> FastAPI:
     # Add compression middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     
+    # Mount static files for Web UI
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    if os.path.exists(static_dir):
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    else:
+        # Create static directory if it doesn't exist
+        os.makedirs(static_dir, exist_ok=True)
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    
     # Include routers
     app.include_router(intent.router, prefix="/api/v1/intent", tags=["Intent"])
     app.include_router(network.router, prefix="/api/v1/network", tags=["Network"])
     app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["Monitoring"])
-    app.include_router(health.router, prefix="/api/v1/health", tags=["Health"])
+    app.include_router(health.router, prefix="/health", tags=["Health"])
     
     # Configure logging
     _configure_logging()
@@ -62,6 +72,10 @@ def create_app() -> FastAPI:
             log_dir = os.path.dirname(settings.log_file)
             if log_dir:
                 os.makedirs(log_dir, exist_ok=True)
+        
+        # Create static directory for Web UI if it doesn't exist
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        os.makedirs(static_dir, exist_ok=True)
     
     @app.on_event("shutdown")
     async def shutdown_event() -> None:
@@ -70,11 +84,18 @@ def create_app() -> FastAPI:
     
     @app.get("/")
     async def root():
-        """Root endpoint."""
+        """Root endpoint - redirect to Web UI."""
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/static/index.html")
+    
+    @app.get("/api")
+    async def api_info():
+        """API information endpoint."""
         return {
             "message": "LLM Intent-based SDN API",
             "version": "0.1.0",
             "docs": "/docs",
+            "web_ui": "/static/index.html",
             "status": "running"
         }
     
@@ -88,28 +109,9 @@ def create_app() -> FastAPI:
 
 
 def _configure_logging() -> None:
-    """Configure logging with loguru."""
-    # Remove default handler
-    logger.remove()
-    
-    # Add console handler
-    logger.add(
-        sink=lambda msg: print(msg, end=""),
-        level=settings.log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        colorize=True
-    )
-    
-    # Add file handler if specified
-    if settings.log_file:
-        logger.add(
-            sink=settings.log_file,
-            level=settings.log_level,
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            rotation="1 day",
-            retention="30 days",
-            compression="gz"
-        )
+    """Configure application logging."""
+    # Custom logging configuration here if needed
+    pass
 
 
 # Create app instance

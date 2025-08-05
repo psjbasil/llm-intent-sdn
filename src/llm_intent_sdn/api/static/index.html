@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Intent-based SDN Management System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .card-hover { transition: all 0.3s ease; }
+        .card-hover:hover { transform: translateY(-5px); box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
+        .network-canvas { height: 500px; border: 2px solid #e5e7eb; border-radius: 12px; background: #f9fafb; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .status-online { background-color: #10b981; animation: pulse 2s infinite; }
+        .status-offline { background-color: #ef4444; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .tab-active { background: #3b82f6; color: white; }
+        .fade-in { animation: fadeIn 0.6s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Navigation Header -->
+    <nav class="gradient-bg text-white shadow-xl">
+        <div class="container mx-auto px-6 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="bg-white bg-opacity-20 p-3 rounded-xl">
+                        <i class="fas fa-network-wired text-2xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold">LLM Intent-based SDN</h1>
+                        <p class="text-blue-100 text-sm">Intelligent Software-Defined Network Management</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div id="status-indicator" class="flex items-center space-x-2 bg-white bg-opacity-20 px-4 py-2 rounded-lg">
+                        <div class="status-dot status-online" id="connection-dot"></div>
+                        <span id="connection-text">Connected</span>
+                    </div>
+                    <button onclick="refreshAll()" class="px-4 py-2 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg transition-all">
+                        <i class="fas fa-sync-alt mr-2"></i>Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mx-auto px-6 py-8">
+        <!-- Dashboard Statistics -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-xl shadow-lg card-hover">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm font-medium">Network Devices</p>
+                        <p id="device-count" class="text-3xl font-bold text-blue-600">0</p>
+                        <p class="text-green-600 text-sm mt-1">
+                            <i class="fas fa-arrow-up mr-1"></i>Online
+                        </p>
+                    </div>
+                    <div class="bg-blue-100 p-4 rounded-xl">
+                        <i class="fas fa-server text-2xl text-blue-600"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-lg card-hover">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm font-medium">Active Flow Rules</p>
+                        <p id="flow-count" class="text-3xl font-bold text-green-600">0</p>
+                        <p class="text-green-600 text-sm mt-1">
+                            <i class="fas fa-check mr-1"></i>Running
+                        </p>
+                    </div>
+                    <div class="bg-green-100 p-4 rounded-xl">
+                        <i class="fas fa-stream text-2xl text-green-600"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-lg card-hover">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm font-medium">Processed Intents</p>
+                        <p id="intent-count" class="text-3xl font-bold text-purple-600">0</p>
+                        <p class="text-purple-600 text-sm mt-1">
+                            <i class="fas fa-brain mr-1"></i>AI Analysis
+                        </p>
+                    </div>
+                    <div class="bg-purple-100 p-4 rounded-xl">
+                        <i class="fas fa-magic text-2xl text-purple-600"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-lg card-hover">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm font-medium">System Health</p>
+                        <p id="health-status" class="text-3xl font-bold text-orange-600">Good</p>
+                        <p class="text-green-600 text-sm mt-1">
+                            <i class="fas fa-heartbeat mr-1"></i>99% Uptime
+                        </p>
+                    </div>
+                    <div class="bg-orange-100 p-4 rounded-xl">
+                        <i class="fas fa-shield-alt text-2xl text-orange-600"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Feature Tabs -->
+        <div class="bg-white rounded-xl shadow-lg mb-8">
+            <div class="flex border-b border-gray-200">
+                <button onclick="switchTab('intent')" class="tab-button px-8 py-4 font-medium tab-active" data-tab="intent">
+                    <i class="fas fa-comment-dots mr-2"></i>Intent Processing
+                </button>
+                <button onclick="switchTab('topology')" class="tab-button px-8 py-4 font-medium text-gray-600 hover:text-blue-600" data-tab="topology">
+                    <i class="fas fa-project-diagram mr-2"></i>Network Topology
+                </button>
+                <button onclick="switchTab('flows')" class="tab-button px-8 py-4 font-medium text-gray-600 hover:text-blue-600" data-tab="flows">
+                    <i class="fas fa-list mr-2"></i>Flow Rules
+                </button>
+                <button onclick="switchTab('monitoring')" class="tab-button px-8 py-4 font-medium text-gray-600 hover:text-blue-600" data-tab="monitoring">
+                    <i class="fas fa-chart-line mr-2"></i>System Monitoring
+                </button>
+            </div>
+        </div>
+
+        <!-- Intent Processing Tab -->
+        <div id="intent-tab" class="tab-content fade-in">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Intent Input Area -->
+                <div class="lg:col-span-2">
+                    <div class="bg-white p-8 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-bold mb-6 text-gray-800">
+                            <i class="fas fa-brain mr-3 text-blue-600"></i>Natural Language Intent Input
+                        </h3>
+                        <textarea 
+                            id="intent-input" 
+                            class="w-full p-4 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-none"
+                            rows="6"
+                            placeholder="Please describe your network management requirements in natural language...&#10;&#10;Examples:&#10;• Block all traffic from host 10.0.0.1 to host 10.0.0.2&#10;• Set QoS priority for video traffic on port 80&#10;• Monitor bandwidth usage on all network links"
+                        ></textarea>
+                        <div class="flex space-x-4 mt-6">
+                            <button onclick="processIntent()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors">
+                                <i class="fas fa-play mr-2"></i>Execute Intent
+                            </button>
+                            <button onclick="analyzeIntent()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white px-6 py-3 rounded-lg font-medium transition-colors">
+                                <i class="fas fa-search mr-2"></i>Analyze Only
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Processing Results -->
+                    <div id="intent-results" class="mt-6 bg-white p-6 rounded-xl shadow-lg" style="display: none;">
+                        <h4 class="text-lg font-semibold mb-4 text-gray-800">
+                            <i class="fas fa-clipboard-check mr-2 text-green-600"></i>Processing Results
+                        </h4>
+                        <div id="results-content"></div>
+                    </div>
+                </div>
+
+                <!-- Quick Examples and History -->
+                <div class="space-y-6">
+                    <!-- Quick Examples -->
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h4 class="text-lg font-semibold mb-4 text-gray-800">
+                            <i class="fas fa-lightbulb mr-2 text-yellow-500"></i>Quick Examples
+                        </h4>
+                        <div class="space-y-3">
+                            <button onclick="loadExample('security')" class="w-full text-left p-4 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 transition-all">
+                                <div class="font-medium text-red-800">Security Control</div>
+                                <div class="text-sm text-red-600 mt-1">Block communication between specific hosts</div>
+                            </button>
+                            <button onclick="loadExample('routing')" class="w-full text-left p-4 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-all">
+                                <div class="font-medium text-blue-800">Route Optimization</div>
+                                <div class="text-sm text-blue-600 mt-1">Set optimal path routing</div>
+                            </button>
+                            <button onclick="loadExample('monitoring')" class="w-full text-left p-4 bg-green-50 hover:bg-green-100 rounded-lg border border-green-200 transition-all">
+                                <div class="font-medium text-green-800">Network Monitoring</div>
+                                <div class="text-sm text-green-600 mt-1">Monitor bandwidth and performance</div>
+                            </button>
+                            <button onclick="loadExample('qos')" class="w-full text-left p-4 bg-purple-50 hover:bg-purple-100 rounded-lg border border-purple-200 transition-all">
+                                <div class="font-medium text-purple-800">Quality of Service</div>
+                                <div class="text-sm text-purple-600 mt-1">Configure QoS policies</div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Intent History -->
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h4 class="text-lg font-semibold mb-4 text-gray-800">
+                            <i class="fas fa-history mr-2 text-gray-600"></i>Processing History
+                        </h4>
+                        <div id="intent-history" class="space-y-3 max-h-64 overflow-y-auto">
+                            <p class="text-gray-500 text-center py-4">No processing history yet</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Network Topology Tab -->
+        <div id="topology-tab" class="tab-content" style="display: none;">
+            <div class="bg-white p-8 rounded-xl shadow-lg">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-bold text-gray-800">
+                        <i class="fas fa-project-diagram mr-3 text-blue-600"></i>Network Topology Visualization
+                    </h3>
+                    <div class="flex space-x-3">
+                        <button onclick="refreshTopology()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg">
+                            <i class="fas fa-sync-alt mr-2"></i>Refresh
+                        </button>
+                        <select id="layout-select" onchange="changeLayout()" class="px-3 py-2 border border-gray-300 rounded-lg">
+                            <option value="hierarchical">Hierarchical Layout</option>
+                            <option value="physics">Physics Layout</option>
+                            <option value="circular">Circular Layout</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="network-topology" class="network-canvas"></div>
+            </div>
+        </div>
+
+        <!-- Flow Rules Tab -->
+        <div id="flows-tab" class="tab-content" style="display: none;">
+            <div class="bg-white p-8 rounded-xl shadow-lg">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-bold text-gray-800">
+                        <i class="fas fa-list mr-3 text-green-600"></i>OpenFlow Rules Management
+                    </h3>
+                    <div class="flex space-x-3">
+                        <input type="text" id="flow-search" placeholder="Search flow rules..." class="px-4 py-2 border border-gray-300 rounded-lg">
+                        <select id="switch-filter" onchange="filterFlows()" class="px-3 py-2 border border-gray-300 rounded-lg">
+                            <option value="">All Switches</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="flows-content" class="space-y-4">
+                    <p class="text-gray-500 text-center py-8">Loading flow rules...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Monitoring Tab -->
+        <div id="monitoring-tab" class="tab-content" style="display: none;">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- System Health -->
+                <div class="bg-white p-8 rounded-xl shadow-lg">
+                    <h3 class="text-xl font-bold mb-6 text-gray-800">
+                        <i class="fas fa-heartbeat mr-3 text-red-600"></i>System Health Status
+                    </h3>
+                    <div id="health-metrics" class="space-y-4">
+                        <p class="text-gray-500 text-center py-4">Checking system status...</p>
+                    </div>
+                </div>
+
+                <!-- Performance Metrics -->
+                <div class="bg-white p-8 rounded-xl shadow-lg">
+                    <h3 class="text-xl font-bold mb-6 text-gray-800">
+                        <i class="fas fa-chart-bar mr-3 text-blue-600"></i>Performance Metrics
+                    </h3>
+                    <div id="performance-metrics" class="space-y-4">
+                        <p class="text-gray-500 text-center py-4">Loading performance data...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Anomaly Detection -->
+            <div class="mt-8 bg-white p-8 rounded-xl shadow-lg">
+                <h3 class="text-xl font-bold mb-6 text-gray-800">
+                    <i class="fas fa-exclamation-triangle mr-3 text-yellow-600"></i>Anomaly Detection
+                </h3>
+                <div id="anomalies-content" class="space-y-4">
+                    <div class="bg-green-50 border border-green-200 p-4 rounded-lg text-center">
+                        <i class="fas fa-check-circle text-green-600 mr-2"></i>
+                        <span class="text-green-800">System running normally, no anomalies detected</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Animation -->
+    <div id="loading-overlay" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display: none;">
+        <div class="bg-white p-8 rounded-xl shadow-2xl">
+            <div class="flex items-center space-x-4">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <span class="text-gray-700 text-lg">Processing...</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

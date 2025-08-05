@@ -17,12 +17,16 @@ class RyuController:
     
     def __init__(self):
         self.process = None
+        # Get the directory where this script is located
+        script_dir = Path(__file__).parent
+        controller_path = script_dir / "llm_sdn_controller.py"
+        
         self.ryu_apps = [
             "ryu.app.rest_topology",
             "ryu.app.ws_topology", 
             "ryu.app.ofctl_rest",
             "ryu.app.rest_conf_switch",
-            "ryu.app.simple_switch_13"
+            str(controller_path)  # Use our custom controller
         ]
     
     def start(self):
@@ -31,8 +35,12 @@ class RyuController:
         print(f"Loading applications: {', '.join(self.ryu_apps)}")
         
         try:
-            # Build the command
-            cmd = ["ryu-manager"] + self.ryu_apps
+            # Build the command with OpenFlow port and log level
+            cmd = [
+                "ryu-manager", 
+                "--ofp-tcp-listen-port", "6653",  # Match Mininet's expected port
+                "--verbose"  # Reduce log verbosity
+            ] + self.ryu_apps
             print(f"Command: {' '.join(cmd)}")
             
             # Start RYU controller
@@ -45,6 +53,7 @@ class RyuController:
             )
             
             print("RYU controller started successfully!")
+            print("OpenFlow controller listening on: 0.0.0.0:6653")
             print("REST API available at: http://localhost:8080")
             print("WebSocket API available at: ws://localhost:8080")
             print("\nRYU Controller Output:")

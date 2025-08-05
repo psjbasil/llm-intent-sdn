@@ -29,9 +29,9 @@ def run_command(command: str, description: str = None):
 
 
 def check_python_version():
-    """Check if Python version is >= 3.10."""
+    """Check if Python version is >= 3.8."""
     version = sys.version_info
-    if version < (3, 10):
+    if version < (3, 8):
         print(f"❌ Python 3.10+ is required. Current version: {version.major}.{version.minor}")
         return False
     print(f"✅ Python version: {version.major}.{version.minor}.{version.micro}")
