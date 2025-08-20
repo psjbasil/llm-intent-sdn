@@ -54,7 +54,7 @@ class LLMResponse(BaseModel):
     
     content: str = Field(..., description="Generated response content")
     model: str = Field(..., description="Model used for generation")
-    usage: Dict[str, int] = Field(default_factory=dict, description="Token usage statistics")
+    usage: Dict[str, Any] = Field(default_factory=dict, description="Token usage statistics")
     finish_reason: str = Field(default="stop", description="Reason for completion")
     response_time_ms: int = Field(..., description="Response time in milliseconds")
     

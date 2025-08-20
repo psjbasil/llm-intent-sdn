@@ -22,11 +22,12 @@ class RyuController:
         controller_path = script_dir / "llm_sdn_controller.py"
         
         self.ryu_apps = [
-            "ryu.app.rest_topology",
-            "ryu.app.ws_topology", 
-            "ryu.app.ofctl_rest",
-            "ryu.app.rest_conf_switch",
-            str(controller_path)  # Use our custom controller
+            "ryu.app.rest_topology",      # REST API for topology discovery
+            "ryu.app.ws_topology",        # WebSocket API for topology
+            "ryu.app.ofctl_rest",         # REST API for OpenFlow control
+            "ryu.app.rest_conf_switch",   # Switch configuration API
+            "ryu.app.simple_switch_13",   # Basic switch with LLDP handling
+            str(controller_path)          # Use our custom controller
         ]
     
     def start(self):

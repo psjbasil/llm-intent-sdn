@@ -18,15 +18,18 @@ class NetworkTopo(Topo):
         h5 = self.addHost('h5')
         h6 = self.addHost('h6')
 
-        # Add links
+        # Add links - hosts to switches
         self.addLink(h1, s1)
         self.addLink(h2, s2)
         self.addLink(h3, s3)
         self.addLink(h4, s2)  
         self.addLink(h5, s1)
         self.addLink(h6, s3)
-        self.addLink(s1, s2)
+        
+        # Add inter-switch links (creating multiple paths)
+        self.addLink(s1, s2)  # Path 1: s1 -> s2 -> s3
         self.addLink(s2, s3)
+        self.addLink(s1, s3)  # Path 2: s1 -> s3 (direct link for optimization)
 
 def create_network():
     topo = NetworkTopo()

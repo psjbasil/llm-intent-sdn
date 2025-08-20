@@ -56,7 +56,7 @@ cp env.example .env
 python scripts/start_ryu.py
 
 # Terminal 2: Start Mininet topology (sudo required)
-sudo python scripts/start_mininet.py
+sudo python3.6 scripts/start_mininet.py
 
 # Terminal 3: Start API server with Web UI
 python run.py

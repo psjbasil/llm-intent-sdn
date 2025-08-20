@@ -123,7 +123,19 @@ async function processIntent() {
                 showIntentResults(results);
                 addToIntentHistory(intent, results);
                 intentInput.value = '';
-                showNotification('Intent processed successfully', 'success');
+                
+                // Check actual processing status (normalize first)
+                const normalizedStatus = (results && results.status ? String(results.status).toLowerCase() : '');
+                console.log('processIntent - final status:', results.status, 'normalized:', normalizedStatus);
+                if (normalizedStatus === 'completed' || normalizedStatus === 'success') {
+                    showNotification('Intent processed successfully', 'success');
+                } else if (normalizedStatus === 'failed') {
+                    showNotification(`Intent processing failed: ${results.error_message || 'Unknown error'}`, 'error');
+                } else if (normalizedStatus === 'analyzed') {
+                    showNotification('Intent analysis completed', 'success');
+                } else {
+                    showNotification(`Intent status: ${normalizedStatus || 'unknown'}`, 'info');
+                }
             } else {
                 throw new Error('API call failed');
             }
@@ -217,8 +229,30 @@ function showIntentResults(results, isAnalysis = false) {
 
     resultsDiv.style.display = 'block';
 
-    const statusColor = results.status === 'success' ? 'green' : results.status === 'analyzed' ? 'blue' : 'red';
-    const statusIcon = results.status === 'success' ? 'check-circle' : results.status === 'analyzed' ? 'search' : 'exclamation-circle';
+    // Normalize status from backend (enum/string/uppercase) and log for debugging
+    const normalizedStatus = (results && results.status ? String(results.status).toLowerCase() : '');
+    console.log('showIntentResults - status:', results.status, 'normalized:', normalizedStatus, 'isAnalysis:', isAnalysis);
+
+    // Determine status color and icon based on normalized status and analysis mode
+    let statusColor, statusIcon;
+    
+    if (normalizedStatus === 'completed' || normalizedStatus === 'success') {
+        statusColor = 'green';
+        statusIcon = 'check-circle';
+    } else if (normalizedStatus === 'processing') {
+        statusColor = 'yellow';
+        statusIcon = 'clock';
+    } else if (normalizedStatus === 'analyzed') {
+        statusColor = 'blue';
+        statusIcon = 'search';
+    } else if (normalizedStatus === 'failed') {
+        statusColor = 'red';
+        statusIcon = 'exclamation-circle';
+    } else {
+        // Default to green for unknown status
+        statusColor = 'green';
+        statusIcon = 'check-circle';
+    }
 
     let html = `
         <div class="bg-${statusColor}-50 border border-${statusColor}-200 p-6 rounded-lg">
@@ -231,7 +265,15 @@ function showIntentResults(results, isAnalysis = false) {
             </div>
     `;
 
-    if (results.message) {
+    // Show LLM interpretation or error message
+    if (results.llm_interpretation) {
+        html += `
+            <div class="mb-4">
+                <h6 class="font-medium text-${statusColor}-700 mb-2">Analysis Results:</h6>
+                <p class="text-${statusColor}-600">${results.llm_interpretation}</p>
+            </div>
+        `;
+    } else if (results.message) {
         html += `
             <div class="mb-4">
                 <h6 class="font-medium text-${statusColor}-700 mb-2">Analysis Results:</h6>
@@ -239,8 +281,43 @@ function showIntentResults(results, isAnalysis = false) {
             </div>
         `;
     }
+    
+    // Show error message if failed
+    if (results.status === 'failed' && results.error_message) {
+        html += `
+            <div class="mb-4">
+                <h6 class="font-medium text-red-700 mb-2">Error Details:</h6>
+                <p class="text-red-600">${results.error_message}</p>
+            </div>
+        `;
+    }
 
-    if (results.actions_taken) {
+    // Show applied actions
+    if (results.applied_actions && results.applied_actions.length > 0) {
+        html += `
+            <div class="mb-4">
+                <h6 class="font-medium text-green-700 mb-2">Successfully Applied Actions:</h6>
+                <ul class="list-disc list-inside text-green-600 space-y-1">
+                    ${results.applied_actions.map(action => `<li>${action}</li>`).join('')}
+                </ul>
+            </div>
+        `;
+    }
+    
+    // Show failed actions
+    if (results.failed_actions && results.failed_actions.length > 0) {
+        html += `
+            <div class="mb-4">
+                <h6 class="font-medium text-red-700 mb-2">Failed Actions:</h6>
+                <ul class="list-disc list-inside text-red-600 space-y-1">
+                    ${results.failed_actions.map(action => `<li>${action}</li>`).join('')}
+                </ul>
+            </div>
+        `;
+    }
+    
+    // Fallback for legacy actions_taken field
+    if (results.actions_taken && !results.applied_actions) {
         html += `
             <div>
                 <h6 class="font-medium text-${statusColor}-700 mb-2">${isAnalysis ? 'Expected Actions' : 'Executed Actions'}:</h6>
@@ -273,11 +350,14 @@ function loadExample(type) {
 
 // Add to intent history
 function addToIntentHistory(intent, results) {
+    const normalizedStatus = (results && results.status ? String(results.status).toLowerCase() : '');
+    console.log('addToIntentHistory - status:', results.status, 'normalized:', normalizedStatus);
+
     const historyItem = {
         id: Date.now(),
         intent: intent,
         timestamp: new Date(),
-        status: results.status
+        status: normalizedStatus
     };
 
     intentHistory.unshift(historyItem);
@@ -301,8 +381,23 @@ function updateIntentHistory() {
 
     let html = '';
     intentHistory.forEach(item => {
-        const statusColor = item.status === 'success' ? 'green' : item.status === 'analyzed' ? 'blue' : 'red';
-        const statusText = item.status === 'success' ? 'Success' : item.status === 'analyzed' ? 'Analyzed' : 'Failed';
+        // Normalize stored status for safety
+        const normalizedStatus = (item && item.status ? String(item.status).toLowerCase() : '');
+        let statusColor, statusText;
+        
+        if (normalizedStatus === 'completed' || normalizedStatus === 'success') {
+            statusColor = 'green';
+            statusText = normalizedStatus === 'completed' ? 'Completed' : 'Success';
+        } else if (normalizedStatus === 'analyzed') {
+            statusColor = 'blue';
+            statusText = 'Analyzed';
+        } else if (normalizedStatus === 'processing') {
+            statusColor = 'yellow';
+            statusText = 'Processing';
+        } else {
+            statusColor = 'red';
+            statusText = 'Failed';
+        }
         html += `
             <div class="bg-gray-50 p-3 rounded-lg border border-gray-200">
                 <div class="flex items-center justify-between mb-2">

@@ -113,6 +113,12 @@ class IntentResponse(BaseModel):
         default=None,
         description="Time taken to process the intent in milliseconds"
     )
+    confidence_score: float = Field(
+        default=0.0,
+        description="Confidence score for the intent analysis (0.0 to 1.0)",
+        ge=0.0,
+        le=1.0
+    )
     
     # Error Information
     error_message: Optional[str] = Field(

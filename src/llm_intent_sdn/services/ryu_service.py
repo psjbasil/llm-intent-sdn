@@ -28,11 +28,19 @@ class RyuService:
             NetworkTopology: Current network topology
         """
         try:
+            # Try to get real topology from RYU first
+            logger.info("Attempting to get real network topology from RYU controller...")
+            
             # Get switches
             switches = await self._get_switches()
+            if not switches:
+                logger.warning("No switches found from RYU, using mock topology")
+                return self._get_mock_topology()
             
-            # Get ports for each switch
+            # Get ports for each switch and detect hosts
             devices = []
+            detected_hosts = set()  # Track detected hosts to avoid duplicates
+            
             for switch_data in switches:
                 # Handle different possible data formats from RYU
                 if isinstance(switch_data, dict):
@@ -48,6 +56,29 @@ class RyuService:
                 
                 ports = await self._get_switch_ports(dpid_str)
                 
+                # Detect hosts from port names
+                for port in ports:
+                    if port.name and "eth" in port.name.lower():
+                        # Parse port name like "s1-eth1" to detect host
+                        port_parts = port.name.split('-')
+                        if len(port_parts) >= 2:
+                            switch_name = port_parts[0]
+                            eth_part = port_parts[1]
+                            if eth_part.startswith('eth'):
+                                host_num = eth_part.replace('eth', '')
+                                if host_num.isdigit():
+                                    host_name = f"h{host_num}"
+                                    if host_name not in detected_hosts:
+                                        detected_hosts.add(host_name)
+                                        # Create host device
+                                        host_device = NetworkDevice(
+                                            dpid=f"000000000000000{int(host_num)+3}",  # Offset to avoid conflicts
+                                            name=host_name,
+                                            device_type=DeviceType.HOST,
+                                            ports=[]
+                                        )
+                                        devices.append(host_device)
+                
                 device = NetworkDevice(
                     dpid=dpid_str,
                     name=f"s{dpid_str}",
@@ -58,6 +89,18 @@ class RyuService:
             
             # Get links
             links = await self._get_links()
+            
+            # Check if we have valid topology (switches + links)
+            if not links:
+                logger.warning("No links found from RYU, topology discovery failed")
+                logger.info("Falling back to mock topology for development/demo purposes")
+                return self._get_mock_topology()
+            
+            # Validate that we have meaningful topology data
+            if len(links) == 0:
+                logger.warning("Empty links list - topology discovery incomplete")
+                logger.info("Falling back to mock topology for development/demo purposes")
+                return self._get_mock_topology()
             
             # Get flow rules
             flow_rules = await self._get_all_flow_rules()
@@ -72,12 +115,12 @@ class RyuService:
                 traffic_stats=traffic_stats
             )
             
-            logger.info(f"Retrieved topology: {len(devices)} devices, {len(links)} links")
+            logger.info(f"Retrieved real topology: {len(devices)} devices, {len(links)} links")
             return topology
             
         except Exception as e:
-            logger.error(f"Error getting network topology: {e}")
-            # Return a mock topology for development/demo purposes
+            logger.error(f"Error getting network topology from RYU: {e}")
+            logger.info("Falling back to mock topology for development/demo purposes")
             return self._get_mock_topology()
     
     def _get_mock_topology(self) -> NetworkTopology:
@@ -85,91 +128,86 @@ class RyuService:
         Return a mock topology for development/demo purposes.
         
         Returns:
-            NetworkTopology: Mock network topology
+            NetworkTopology: Mock network topology matching actual Mininet topology
         """
         from ..models.network import NetworkDevice, NetworkPort, NetworkLink, DeviceType, PortState
         
-        # Create mock switches
+        # Create mock switches with proper port configuration
+        # Based on Mininet output: s1-eth1:h1, s1-eth2:h5, s1-eth3:s2
         switch1_ports = [
-            NetworkPort(
-                port_no=1,
-                name="port_1",
-                hw_addr="00:00:00:00:00:01",
-                state=PortState.UP,
-                curr_speed=1000000000,  # 1Gbps
-                max_speed=1000000000
-            ),
-            NetworkPort(
-                port_no=2,
-                name="port_2", 
-                hw_addr="00:00:00:00:00:02",
-                state=PortState.UP,
-                curr_speed=1000000000,
-                max_speed=1000000000
-            )
+            NetworkPort(port_no=1, name="s1-eth1", hw_addr="00:00:00:00:00:01", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=2, name="s1-eth2", hw_addr="00:00:00:00:00:02", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=3, name="s1-eth3", hw_addr="00:00:00:00:00:03", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000)
         ]
         
+        # Based on Mininet output: s2-eth1:h2, s2-eth2:h4, s2-eth3:s1, s2-eth4:s3
         switch2_ports = [
-            NetworkPort(
-                port_no=1,
-                name="port_1",
-                hw_addr="00:00:00:00:00:03",
-                state=PortState.UP,
-                curr_speed=1000000000,
-                max_speed=1000000000
-            ),
-            NetworkPort(
-                port_no=2,
-                name="port_2",
-                hw_addr="00:00:00:00:00:04",
-                state=PortState.UP,
-                curr_speed=1000000000,
-                max_speed=1000000000
-            )
+            NetworkPort(port_no=1, name="s2-eth1", hw_addr="00:00:00:00:00:04", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=2, name="s2-eth2", hw_addr="00:00:00:00:00:05", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=3, name="s2-eth3", hw_addr="00:00:00:00:00:06", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=4, name="s2-eth4", hw_addr="00:00:00:00:00:07", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000)
         ]
         
+        # Based on Mininet output: s3-eth1:h3, s3-eth2:h6, s3-eth3:s2
+        switch3_ports = [
+            NetworkPort(port_no=1, name="s3-eth1", hw_addr="00:00:00:00:00:08", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=2, name="s3-eth2", hw_addr="00:00:00:00:00:09", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000),
+            NetworkPort(port_no=3, name="s3-eth3", hw_addr="00:00:00:00:00:0a", state=PortState.UP, curr_speed=1000000000, max_speed=1000000000)
+        ]
+        
+        # Create switches
         devices = [
-            NetworkDevice(
-                dpid="0000000000000001",
-                name="switch1",
-                device_type=DeviceType.SWITCH,
-                ports=switch1_ports
-            ),
-            NetworkDevice(
-                dpid="0000000000000002",
-                name="switch2",
-                device_type=DeviceType.SWITCH,
-                ports=switch2_ports
-            )
+            NetworkDevice(dpid="0000000000000001", name="s1", device_type=DeviceType.SWITCH, ports=switch1_ports),
+            NetworkDevice(dpid="0000000000000002", name="s2", device_type=DeviceType.SWITCH, ports=switch2_ports),
+            NetworkDevice(dpid="0000000000000003", name="s3", device_type=DeviceType.SWITCH, ports=switch3_ports)
         ]
         
-        # Create mock links
+        # Create hosts
+        hosts = [
+            NetworkDevice(dpid="0000000000000004", name="h1", device_type=DeviceType.HOST, ports=[]),
+            NetworkDevice(dpid="0000000000000005", name="h2", device_type=DeviceType.HOST, ports=[]),
+            NetworkDevice(dpid="0000000000000006", name="h3", device_type=DeviceType.HOST, ports=[]),
+            NetworkDevice(dpid="0000000000000007", name="h4", device_type=DeviceType.HOST, ports=[]),
+            NetworkDevice(dpid="0000000000000008", name="h5", device_type=DeviceType.HOST, ports=[]),
+            NetworkDevice(dpid="0000000000000009", name="h6", device_type=DeviceType.HOST, ports=[])
+        ]
+        
+        # Add hosts to devices list
+        devices.extend(hosts)
+        
+        # Create links based on Mininet topology
+        # s1-eth3:s2-eth3 (s1 to s2)
+        # s2-eth4:s3-eth3 (s2 to s3)
         links = [
-            NetworkLink(
-                src_dpid="0000000000000001",
-                src_port=2,
-                dst_dpid="0000000000000002",
-                dst_port=1
-            )
+            NetworkLink(src_dpid="0000000000000001", src_port_no=3, dst_dpid="0000000000000002", dst_port_no=3),
+            NetworkLink(src_dpid="0000000000000002", src_port_no=4, dst_dpid="0000000000000003", dst_port_no=3)
         ]
         
-        logger.info("Returning mock topology (3 devices, 1 link)")
+        logger.info("Returning mock topology (9 devices: 3 switches + 6 hosts, 2 inter-switch links)")
         return NetworkTopology(
             devices=devices,
             links=links,
             flow_rules=[],
-            traffic_stats={}
+            traffic_stats=[]
         )
     
     async def _get_switches(self) -> List[Dict[str, Any]]:
         """Get list of switches from RYU controller."""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{self.base_url}{self.api_base}/switches")
                 response.raise_for_status()
-                return response.json()
+                switches = response.json()
+                logger.info(f"Successfully retrieved {len(switches)} switches from RYU")
+                return switches
+        except httpx.ConnectError:
+            logger.warning(f"Cannot connect to RYU controller at {self.base_url}")
+            return []
+        except httpx.TimeoutException:
+            logger.warning("Timeout connecting to RYU controller")
+            return []
         except Exception as e:
-            logger.error(f"Error getting switches: {e}")
+            logger.error(f"Error getting switches from RYU: {e}")
             return []
     
     async def _get_switch_ports(self, dpid: str) -> List[NetworkPort]:
@@ -198,9 +236,22 @@ class RyuService:
                         if isinstance(port_list, list):
                             for port_data in port_list:
                                 if isinstance(port_data, dict):
+                                    # Handle port_no which might be string (e.g., 'LOCAL') or int
+                                    port_no_raw = port_data.get("port_no", 0)
+                                    try:
+                                        port_no = int(port_no_raw) if isinstance(port_no_raw, (int, str)) and str(port_no_raw).isdigit() else 0
+                                    except (ValueError, TypeError):
+                                        # Skip ports with non-numeric port numbers (like 'LOCAL')
+                                        logger.debug(f"Skipping port with non-numeric port_no: {port_no_raw}")
+                                        continue
+                                    
+                                    if port_no == 0 and port_no_raw != 0:
+                                        # Skip invalid ports
+                                        continue
+                                    
                                     port = NetworkPort(
-                                        port_no=port_data.get("port_no", 0),
-                                        name=port_data.get("name", f"port_{port_data.get('port_no', 0)}"),
+                                        port_no=port_no,
+                                        name=port_data.get("name", f"port_{port_no}"),
                                         hw_addr=port_data.get("hw_addr", "00:00:00:00:00:00"),
                                         state=PortState.UP if port_data.get("state", 0) == 0 else PortState.DOWN,
                                         curr_speed=port_data.get("curr_speed", 0),
@@ -211,9 +262,22 @@ class RyuService:
                     # If ports_data is directly a list of ports
                     for port_data in ports_data:
                         if isinstance(port_data, dict):
+                            # Handle port_no which might be string (e.g., 'LOCAL') or int
+                            port_no_raw = port_data.get("port_no", 0)
+                            try:
+                                port_no = int(port_no_raw) if isinstance(port_no_raw, (int, str)) and str(port_no_raw).isdigit() else 0
+                            except (ValueError, TypeError):
+                                # Skip ports with non-numeric port numbers (like 'LOCAL')
+                                logger.debug(f"Skipping port with non-numeric port_no: {port_no_raw}")
+                                continue
+                            
+                            if port_no == 0 and port_no_raw != 0:
+                                # Skip invalid ports
+                                continue
+                            
                             port = NetworkPort(
-                                port_no=port_data.get("port_no", 0),
-                                name=port_data.get("name", f"port_{port_data.get('port_no', 0)}"),
+                                port_no=port_no,
+                                name=port_data.get("name", f"port_{port_no}"),
                                 hw_addr=port_data.get("hw_addr", "00:00:00:00:00:00"),
                                 state=PortState.UP if port_data.get("state", 0) == 0 else PortState.DOWN,
                                 curr_speed=port_data.get("curr_speed", 0),
@@ -233,37 +297,191 @@ class RyuService:
     async def _get_links(self) -> List[NetworkLink]:
         """Get network links from RYU controller."""
         try:
-            # Note: RYU topology discovery might not be enabled by default
-            # This is a placeholder implementation
-            async with httpx.AsyncClient() as client:
-                try:
-                    response = await client.get(f"{self.base_url}/v1.0/topology/links")
-                    response.raise_for_status()
-                    links_data = response.json()
-                    
-                    links = []
-                    for link_data in links_data:
-                        src = link_data.get("src", {})
-                        dst = link_data.get("dst", {})
+            # First try to get links from our custom controller's LLDP discovery
+            custom_links = await self._get_custom_controller_links()
+            if custom_links:
+                logger.info(f"Using {len(custom_links)} links from custom LLDP discovery")
+                return custom_links
+            
+            # Fallback to standard RYU topology API endpoints
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Try different RYU topology API endpoints
+                # RYU topology API endpoints can vary depending on the version and apps loaded
+                topology_endpoints = [
+                    f"{self.base_url}/stats/topology/links",  # Standard RYU topology API
+                    f"{self.base_url}/topology/links",        # Alternative topology API
+                    f"{self.base_url}/v1.0/topology/links",   # Versioned topology API
+                    f"{self.base_url}{self.api_base}/topology/links",  # With API base
+                    f"{self.base_url}/rest_topology/links",   # REST topology app
+                    f"{self.base_url}/ws_topology/links",     # WebSocket topology app
+                    f"{self.base_url}/topology/links.json",   # JSON format
+                    f"{self.base_url}/v1.0/topology/links.json"  # Versioned JSON
+                ]
+                
+                for endpoint in topology_endpoints:
+                    try:
+                        logger.debug(f"Trying topology endpoint: {endpoint}")
+                        response = await client.get(endpoint)
+                        response.raise_for_status()
+                        links_data = response.json()
+                        logger.info(f"Successfully retrieved {len(links_data)} links from {endpoint}")
                         
-                        link = NetworkLink(
-                            src_dpid=src.get("dpid", 0),
-                            src_port_no=src.get("port_no", 0),
-                            dst_dpid=dst.get("dpid", 0),
-                            dst_port_no=dst.get("port_no", 0)
-                        )
-                        links.append(link)
-                    
-                    return links
-                    
-                except httpx.HTTPStatusError:
-                    # Topology API might not be available
-                    logger.warning("Topology API not available, returning empty links")
-                    return []
-                    
+                        # If topology API returns 0 links, log warning but don't use inference
+                        if len(links_data) == 0:
+                            logger.warning(f"Topology API {endpoint} returned 0 links - LLDP discovery may not be working")
+                            logger.info("This could be due to:")
+                            logger.info("1. LLDP packets not being sent by controller")
+                            logger.info("2. LLDP packets being filtered")
+                            logger.info("3. Network topology not fully discovered yet")
+                            continue
+                        
+                        links = []
+                        logger.debug(f"Raw links data: {links_data}")
+                        
+                        for link_data in links_data:
+                            # Handle different link data formats
+                            if isinstance(link_data, dict):
+                                # Format 1: {"src": {"dpid": 1, "port_no": 1}, "dst": {"dpid": 2, "port_no": 2}}
+                                if "src" in link_data and "dst" in link_data:
+                                    src = link_data.get("src", {})
+                                    dst = link_data.get("dst", {})
+                                    
+                                    link = NetworkLink(
+                                        src_dpid=str(src.get("dpid", 0)),
+                                        src_port_no=src.get("port_no", 0),
+                                        dst_dpid=str(dst.get("dpid", 0)),
+                                        dst_port_no=dst.get("port_no", 0)
+                                    )
+                                    links.append(link)
+                                
+                                # Format 2: {"dpid": 1, "port_no": 1, "peer_dpid": 2, "peer_port_no": 2}
+                                elif "dpid" in link_data and "peer_dpid" in link_data:
+                                    link = NetworkLink(
+                                        src_dpid=str(link_data.get("dpid", 0)),
+                                        src_port_no=link_data.get("port_no", 0),
+                                        dst_dpid=str(link_data.get("peer_dpid", 0)),
+                                        dst_port_no=link_data.get("peer_port_no", 0)
+                                    )
+                                    links.append(link)
+                                
+                                # Format 3: {"src_dpid": 1, "src_port": 1, "dst_dpid": 2, "dst_port": 2}
+                                elif "src_dpid" in link_data and "dst_dpid" in link_data:
+                                    link = NetworkLink(
+                                        src_dpid=str(link_data.get("src_dpid", 0)),
+                                        src_port_no=link_data.get("src_port", 0),
+                                        dst_dpid=str(link_data.get("dst_dpid", 0)),
+                                        dst_port_no=link_data.get("dst_port", 0)
+                                    )
+                                    links.append(link)
+                                
+                                else:
+                                    logger.warning(f"Unknown link data format: {link_data}")
+                            
+                            # Format 4: List of values [src_dpid, src_port, dst_dpid, dst_port]
+                            elif isinstance(link_data, list) and len(link_data) >= 4:
+                                link = NetworkLink(
+                                    src_dpid=str(link_data[0]),
+                                    src_port_no=link_data[1],
+                                    dst_dpid=str(link_data[2]),
+                                    dst_port_no=link_data[3]
+                                )
+                                links.append(link)
+                            
+                            else:
+                                logger.warning(f"Unsupported link data format: {link_data}")
+                        
+                        logger.info(f"Parsed {len(links)} links from {endpoint}")
+                        return links
+                        
+                    except httpx.HTTPStatusError as e:
+                        logger.debug(f"Topology endpoint {endpoint} failed: {e}")
+                        continue
+                    except Exception as e:
+                        logger.debug(f"Error with topology endpoint {endpoint}: {e}")
+                        continue
+                
+                # If all topology APIs fail, log detailed error
+                logger.error("All topology APIs failed - LLDP-based topology discovery is not working")
+                logger.error("This indicates a fundamental issue with the RYU controller setup:")
+                logger.error("1. LLDP packets are not being sent")
+                logger.error("2. LLDP packets are not being processed")
+                logger.error("3. Topology discovery apps are not loaded")
+                logger.error("4. Network topology is not properly configured")
+                
+                # Try to get available endpoints for debugging
+                try:
+                    response = await client.get(f"{self.base_url}/")
+                    logger.debug(f"RYU controller root response: {response.status_code}")
+                except Exception as e:
+                    logger.debug(f"Could not access RYU root: {e}")
+                
+                # Return empty links list - let the system handle this properly
+                logger.warning("Returning empty links list - topology discovery needs to be fixed")
+                return []
+                     
         except Exception as e:
             logger.error(f"Error getting links: {e}")
             return []
+    
+    async def _get_custom_controller_links(self) -> List[NetworkLink]:
+        """Get links from our custom controller's LLDP discovery."""
+        try:
+            # Try to get links from our custom controller's REST API
+            async with httpx.AsyncClient(timeout=10.0) as client:  # Increased timeout
+                # Try different possible endpoints for our custom controller
+                custom_endpoints = [
+                    f"{self.base_url}/custom/links",  # Custom controller links endpoint
+                    f"{self.base_url}/lldp/links",    # LLDP links endpoint
+                    f"{self.base_url}/topology/custom/links",  # Custom topology endpoint
+                ]
+                
+                for endpoint in custom_endpoints:
+                    try:
+                        logger.info(f"Trying custom controller endpoint: {endpoint}")
+                        response = await client.get(endpoint)
+                        response.raise_for_status()
+                        links_data = response.json()
+                        
+                        logger.debug(f"Raw links data from {endpoint}: {links_data}")
+                        
+                        if links_data and len(links_data) > 0:
+                            links = []
+                            for link_data in links_data:
+                                if isinstance(link_data, dict):
+                                    link = NetworkLink(
+                                        src_dpid=str(link_data.get("src_switch", 0)),
+                                        src_port_no=link_data.get("src_port", 0),
+                                        dst_dpid=str(link_data.get("dst_switch", 0)),
+                                        dst_port_no=link_data.get("dst_port", 0)
+                                    )
+                                    links.append(link)
+                            
+                            logger.info(f"Retrieved {len(links)} links from custom controller endpoint: {endpoint}")
+                            return links
+                        else:
+                            logger.debug(f"Empty links data from {endpoint}")
+                        
+                    except httpx.HTTPStatusError as e:
+                        logger.warning(f"Custom endpoint {endpoint} failed: {e}")
+                        continue
+                    except httpx.ConnectError as e:
+                        logger.warning(f"Connection error with custom endpoint {endpoint}: {e}")
+                        continue
+                    except httpx.TimeoutException as e:
+                        logger.warning(f"Timeout with custom endpoint {endpoint}: {e}")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Error with custom endpoint {endpoint}: {e}")
+                        continue
+                
+                logger.warning("No custom controller links endpoint found or all endpoints failed")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting custom controller links: {e}")
+            return []
+    
+
     
     async def _get_all_flow_rules(self) -> List[FlowRule]:
         """Get all flow rules from all switches."""
@@ -312,47 +530,64 @@ class RyuService:
                 flows_data = response.json()
                 
                 flow_rules = []
-                for dpid_str, flow_list in flows_data.items():
-                    for flow_data in flow_list:
-                        # Parse match criteria
-                        match_data = flow_data.get("match", {})
-                        match = FlowMatch(
-                            in_port=match_data.get("in_port"),
-                            eth_src=match_data.get("eth_src"),
-                            eth_dst=match_data.get("eth_dst"),
-                            eth_type=match_data.get("eth_type"),
-                            ip_src=match_data.get("ipv4_src"),
-                            ip_dst=match_data.get("ipv4_dst"),
-                            ip_proto=match_data.get("ip_proto"),
-                            tcp_src=match_data.get("tcp_src"),
-                            tcp_dst=match_data.get("tcp_dst"),
-                            udp_src=match_data.get("udp_src"),
-                            udp_dst=match_data.get("udp_dst"),
-                            vlan_vid=match_data.get("vlan_vid")
-                        )
-                        
-                        # Parse actions
-                        actions_data = flow_data.get("actions", [])
-                        actions = []
-                        for action_data in actions_data:
-                            action = FlowAction(
-                                type=action_data.get("type", "OUTPUT"),
-                                port=action_data.get("port"),
-                                value=action_data.get("value")
+                
+                # Handle different response formats
+                if isinstance(flows_data, dict):
+                    for dpid_str, flow_list in flows_data.items():
+                        if not isinstance(flow_list, list):
+                            logger.debug(f"Expected list for flow data, got {type(flow_list)}")
+                            continue
+                        for flow_data in flow_list:
+                            if not isinstance(flow_data, dict):
+                                logger.debug(f"Expected dict for flow entry, got {type(flow_data)}")
+                                continue
+                            
+                            # Parse match criteria
+                            match_data = flow_data.get("match", {})
+                            match = FlowMatch(
+                                in_port=match_data.get("in_port"),
+                                eth_src=match_data.get("eth_src"),
+                                eth_dst=match_data.get("eth_dst"),
+                                eth_type=match_data.get("eth_type"),
+                                ip_src=match_data.get("ipv4_src"),
+                                ip_dst=match_data.get("ipv4_dst"),
+                                ip_proto=match_data.get("ip_proto"),
+                                tcp_src=match_data.get("tcp_src"),
+                                tcp_dst=match_data.get("tcp_dst"),
+                                udp_src=match_data.get("udp_src"),
+                                udp_dst=match_data.get("udp_dst"),
+                                vlan_vid=match_data.get("vlan_vid")
                             )
-                            actions.append(action)
-                        
-                        flow_rule = FlowRule(
-                            dpid=int(dpid_str),
-                            table_id=flow_data.get("table_id", 0),
-                            priority=flow_data.get("priority", 0),
-                            match=match,
-                            actions=actions,
-                            idle_timeout=flow_data.get("idle_timeout", 0),
-                            hard_timeout=flow_data.get("hard_timeout", 0),
-                            cookie=flow_data.get("cookie", 0)
-                        )
-                        flow_rules.append(flow_rule)
+                            
+                            # Parse actions
+                            actions_data = flow_data.get("actions", [])
+                            actions = []
+                            for action_data in actions_data:
+                                if isinstance(action_data, dict):
+                                    action = FlowAction(
+                                        type=action_data.get("type", "OUTPUT"),
+                                        port=action_data.get("port"),
+                                        value=action_data.get("value")
+                                    )
+                                    actions.append(action)
+                            
+                            # Convert dpid to int safely
+                            try:
+                                dpid_int = int(dpid_str)
+                            except (ValueError, TypeError):
+                                dpid_int = 1  # Default value
+                            
+                            flow_rule = FlowRule(
+                                dpid=dpid_int,
+                                table_id=flow_data.get("table_id", 0),
+                                priority=flow_data.get("priority", 0),
+                                match=match,
+                                actions=actions,
+                                idle_timeout=flow_data.get("idle_timeout", 0),
+                                hard_timeout=flow_data.get("hard_timeout", 0),
+                                cookie=flow_data.get("cookie", 0)
+                            )
+                            flow_rules.append(flow_rule)
                 
                 return flow_rules
                 
@@ -367,9 +602,18 @@ class RyuService:
             all_stats = []
             
             for switch_data in switches:
-                dpid = switch_data["dpid"]
-                stats = await self._get_traffic_stats(dpid)
-                all_stats.extend(stats)
+                # Handle different DPID formats from _get_switches
+                if isinstance(switch_data, dict):
+                    dpid = switch_data.get("dpid")
+                    if dpid is not None:
+                        # Convert DPID to int if it's a string
+                        try:
+                            dpid_int = int(dpid) if isinstance(dpid, (str, int)) else dpid
+                            stats = await self._get_traffic_stats(dpid_int)
+                            all_stats.extend(stats)
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"Invalid DPID format: {dpid}, error: {e}")
+                            continue
             
             return all_stats
             
@@ -491,6 +735,142 @@ class RyuService:
         except Exception as e:
             logger.error(f"Error installing flow rule: {e}")
             return False
+    
+    async def verify_connectivity(self, source_host: str, target_host: str) -> dict:
+        """Verify connectivity between two hosts using ping."""
+        try:
+            import sys
+            import os
+            
+            logger.info(f"Verifying connectivity: {source_host} -> {target_host}")
+            
+            # Import the Mininet executor
+            sys.path.append(os.path.join(os.path.dirname(__file__), '../../scripts'))
+            from mininet_executor import MininetExecutor
+            
+            # Use the Mininet executor for real testing
+            executor = MininetExecutor()
+            result = executor.ping_test(source_host, target_host, count=3)
+            executor.disconnect()
+            
+            return {
+                "success": result.get("success", False),
+                "packet_loss_percent": result.get("packet_loss_percent", 100),
+                "average_latency_ms": result.get("average_latency_ms", 0.0),
+                "output": result.get("output", ""),
+                "verification_method": result.get("method", "unknown")
+            }
+                
+        except Exception as e:
+            logger.error(f"Error verifying connectivity: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def measure_bandwidth(self, source_host: str, target_host: str, duration: int = 10) -> dict:
+        """Measure bandwidth between two hosts using iperf."""
+        try:
+            import sys
+            import os
+            
+            logger.info(f"Measuring bandwidth: {source_host} -> {target_host}")
+            
+            # Import the Mininet executor
+            sys.path.append(os.path.join(os.path.dirname(__file__), '../../scripts'))
+            from mininet_executor import MininetExecutor
+            
+            # Use the Mininet executor for real testing
+            executor = MininetExecutor()
+            result = executor.bandwidth_test(source_host, target_host, duration)
+            executor.disconnect()
+            
+            return {
+                "success": result.get("success", False),
+                "bandwidth_mbps": result.get("bandwidth_mbps", 0.0),
+                "duration_seconds": result.get("duration_seconds", duration),
+                "output": result.get("output", ""),
+                "verification_method": result.get("method", "unknown")
+            }
+                
+        except Exception as e:
+            logger.error(f"Error measuring bandwidth: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def get_flow_statistics(self, dpid: int) -> dict:
+        """Get real flow statistics from a switch."""
+        try:
+            url = f"{self.ryu_base_url}/stats/flow/{dpid}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url)
+                
+            if response.status_code == 200:
+                flows = response.json()
+                
+                # Process flow statistics
+                total_packets = sum(flow.get('packet_count', 0) for flow_list in flows.values() for flow in flow_list)
+                total_bytes = sum(flow.get('byte_count', 0) for flow_list in flows.values() for flow in flow_list)
+                flow_count = sum(len(flow_list) for flow_list in flows.values())
+                
+                return {
+                    "success": True,
+                    "dpid": dpid,
+                    "flow_count": flow_count,
+                    "total_packets": total_packets,
+                    "total_bytes": total_bytes,
+                    "flows": flows
+                }
+            else:
+                return {"success": False, "error": f"HTTP {response.status_code}"}
+                
+        except Exception as e:
+            logger.error(f"Error getting flow statistics: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def trace_path(self, source_host: str, target_host: str) -> dict:
+        """Trace the network path between two hosts."""
+        try:
+            import subprocess
+            
+            logger.info(f"Tracing path: {source_host} -> {target_host}")
+            
+            # Use traceroute through mininet
+            traceroute_cmd = f"sudo python -c \"import os; os.system('echo \\\"{source_host} traceroute 10.0.0.{target_host[-1]}\\\" | sudo mn --custom scripts/topology.py --topo mytopo --controller remote')\""
+            
+            result = subprocess.run(
+                traceroute_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            
+            if result.returncode == 0:
+                # Parse traceroute output
+                lines = result.stdout.strip().split('\n')
+                hops = []
+                
+                for line in lines[1:]:  # Skip first line (traceroute header)
+                    if line.strip():
+                        hops.append(line.strip())
+                
+                return {
+                    "success": True,
+                    "source": source_host,
+                    "target": target_host,
+                    "hops": hops,
+                    "hop_count": len(hops),
+                    "output": result.stdout
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.stderr
+                }
+                
+        except subprocess.TimeoutExpired:
+            logger.error("Path trace timed out")
+            return {"success": False, "error": "Timeout"}
+        except Exception as e:
+            logger.error(f"Error tracing path: {e}")
+            return {"success": False, "error": str(e)}
     
     async def delete_flow_rule(self, dpid: int, flow_rule: Optional[FlowRule] = None) -> bool:
         """
