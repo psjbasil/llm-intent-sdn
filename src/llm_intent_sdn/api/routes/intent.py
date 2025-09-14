@@ -150,6 +150,32 @@ async def cancel_intent(intent_id: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{intent_id}/delete")
+async def delete_flow_rules(intent_id: str) -> dict:
+    """
+    Delete flow rules associated with a completed intent.
+    
+    Args:
+        intent_id: Intent identifier
+        
+    Returns:
+        Deletion result
+    """
+    try:
+        success = await intent_processor.delete_flow_rules(intent_id)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to delete flow rules")
+        
+        return {"message": f"Flow rules for intent {intent_id} deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting flow rules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/analyze")
 async def analyze_intent_only(request: IntentRequest) -> dict:
     """

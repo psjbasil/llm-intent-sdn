@@ -9,6 +9,7 @@ class NetworkTopo(Topo):
         s1 = self.addSwitch('s1')
         s2 = self.addSwitch('s2')
         s3 = self.addSwitch('s3')
+        s4 = self.addSwitch('s4')  # Additional switch for multi-path routing
 
         # Create hosts
         h1 = self.addHost('h1')
@@ -24,18 +25,24 @@ class NetworkTopo(Topo):
         self.addLink(h3, s3)
         self.addLink(h4, s2)  
         self.addLink(h5, s1)
-        self.addLink(h6, s3)
+        self.addLink(h6, s4)
         
-        # Add inter-switch links (creating multiple paths)
-        self.addLink(s1, s2)  # Path 1: s1 -> s2 -> s3
+        # Multi-path topology without loops for routing optimization testing
+        # Path 1: s1 -> s2 -> s3 (through more congested s2)
+        self.addLink(s1, s2)
         self.addLink(s2, s3)
-        self.addLink(s1, s3)  # Path 2: s1 -> s3 (direct link for optimization)
+        
+        # Path 2: s1 -> s4 -> s3 (through less congested s4)  
+        self.addLink(s1, s4)
+        self.addLink(s4, s3)
 
 def create_network():
     topo = NetworkTopo()
     net = Mininet(
         topo=topo,
-        controller=RemoteController('c0', ip='127.0.0.1', port=6653)
+        controller=RemoteController('c0', ip='127.0.0.1', port=6653),
+        autoSetMacs=True,     # Reduce MAC learning overhead
+        autoStaticArp=True    # Reduce ARP traffic
     )
     return net 
 

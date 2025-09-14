@@ -1,6 +1,6 @@
 """Network-related data models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -26,7 +26,7 @@ class FlowAction(BaseModel):
     """Flow action model."""
     
     type: str = Field(..., description="Action type (e.g., OUTPUT, DROP, SET_VLAN)")
-    port: Optional[int] = Field(None, description="Output port number")
+    port: Optional[Union[int, str]] = Field(None, description="Output port number or special port (e.g., CONTROLLER)")
     value: Optional[Any] = Field(None, description="Action value")
     
     class Config:
@@ -129,7 +129,7 @@ class NetworkPort(BaseModel):
 class NetworkDevice(BaseModel):
     """Network device model."""
     
-    dpid: Optional[int] = Field(None, description="Datapath ID (for switches)")
+    dpid: Optional[Union[int, str]] = Field(None, description="Datapath ID (switches use int; hosts may omit")
     name: str = Field(..., description="Device name")
     device_type: DeviceType = Field(..., description="Device type")
     ip_address: Optional[str] = Field(None, description="IP address")
@@ -214,9 +214,9 @@ class TrafficStats(BaseModel):
 class NetworkLink(BaseModel):
     """Network link model."""
     
-    src_dpid: int = Field(..., description="Source switch DPID")
+    src_dpid: Union[int, str] = Field(..., description="Source switch DPID")
     src_port_no: int = Field(..., description="Source port number")
-    dst_dpid: int = Field(..., description="Destination switch DPID")
+    dst_dpid: Union[int, str] = Field(..., description="Destination switch DPID")
     dst_port_no: int = Field(..., description="Destination port number")
     bandwidth: Optional[int] = Field(None, description="Link bandwidth in Mbps")
     latency: Optional[float] = Field(None, description="Link latency in ms")

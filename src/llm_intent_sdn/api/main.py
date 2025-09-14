@@ -9,7 +9,7 @@ from loguru import logger
 import uvicorn
 
 from ..config import settings
-from .routes import intent, network, monitoring, health, verification
+from .routes import intent, network, monitoring, health
 
 
 def create_app() -> FastAPI:
@@ -53,7 +53,6 @@ def create_app() -> FastAPI:
     app.include_router(intent.router, prefix="/api/v1/intent", tags=["Intent"])
     app.include_router(network.router, prefix="/api/v1/network", tags=["Network"])
     app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["Monitoring"])
-    app.include_router(verification.router, prefix="/api/v1", tags=["Verification"])
     app.include_router(health.router, prefix="/health", tags=["Health"])
     
     # Configure logging

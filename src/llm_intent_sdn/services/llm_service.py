@@ -15,11 +15,21 @@ from ..models.network import NetworkTopology
 class LLMService:
     """Service for interacting with Large Language Models."""
     
-    def __init__(self) -> None:
+    def __init__(self):
         """Initialize LLM service."""
-        self.base_url = settings.openai_base_url
-        self.api_key = settings.openai_api_key
-        self.model = settings.llm_model
+        self.base_url = settings.llm_base_url
+        self.model = settings.llm_model_name
+        
+        # Detect API type
+        self.is_ollama = settings.use_ollama or "localhost:11434" in self.base_url or "127.0.0.1:11434" in self.base_url
+        self.is_gemini = settings.use_gemini or "generativelanguage.googleapis.com" in self.base_url
+        
+        # Set API key based on type
+        if self.is_gemini:
+            self.api_key = settings.gemini_api_key
+        else:
+            self.api_key = settings.openai_api_key
+        
         self.temperature = settings.llm_temperature
         self.max_tokens = settings.llm_max_tokens
         
@@ -100,6 +110,34 @@ For "Set high priority QoS for video traffic on port 80":
     },
     "suggested_actions": ["Create QoS flow rules with high priority", "Set DSCP marking for video traffic"],
     "reasoning": "This is a QoS intent to prioritize specific traffic type"
+}
+
+For "Give video conference traffic highest priority from h1 to h2":
+{
+    "intent_type": "qos",
+    "confidence": 0.92,
+    "extracted_entities": {
+        "source": "h1",
+        "destination": "h2",
+        "traffic_type": "video_conference",
+        "priority": "highest"
+    },
+    "suggested_actions": ["Install QoS flow rules with highest priority queue", "Set traffic shaping for video conference traffic"],
+    "reasoning": "This is a QoS intent to prioritize video conference traffic between specific hosts"
+}
+
+For "Prioritize database traffic from h3 to h4":
+{
+    "intent_type": "qos",
+    "confidence": 0.88,
+    "extracted_entities": {
+        "source": "h3",
+        "destination": "h4",
+        "traffic_type": "database",
+        "priority": "high"
+    },
+    "suggested_actions": ["Create QoS flow rules for database traffic", "Apply priority queuing"],
+    "reasoning": "This is a QoS intent to prioritize database traffic between hosts"
 }
 
 For "Monitor bandwidth usage on all network links":
@@ -266,14 +304,16 @@ Please analyze this intent and provide a structured response."""
                         logger.info("Successfully extracted intent analysis from first list item")
                     elif response_data and isinstance(response_data[0], str):
                         # LLM returned a list of strings (suggested actions)
+                        # Try to infer source/destination from the intent_text
+                        src, dst = self._infer_hosts_from_text(intent_text)
                         response_data = {
-                            "intent_type": "security" if "block" in intent_text.lower() else "routing",
+                            "intent_type": "security" if any(k in intent_text.lower() for k in ["block", "deny"]) else "routing",
                             "confidence": 0.8,
-                            "extracted_entities": {},
-                            "suggested_actions": response_data,  # Use the list as suggested actions
+                            "extracted_entities": {"source": src, "destination": dst} if src and dst else {},
+                            "suggested_actions": response_data,
                             "reasoning": f"Intent analysis based on action list: {', '.join(response_data[:3])}"
                         }
-                        logger.info("Converted LLM action list to intent analysis structure")
+                        logger.info("Converted LLM action list to intent analysis structure with inferred hosts")
                     else:
                         # Fallback to default values
                         response_data = {
@@ -294,10 +334,18 @@ Please analyze this intent and provide a structured response."""
                 except:
                     intent_type = "routing"
                 
+                # Enrich entities if missing hosts
+                entities = response_data.get("extracted_entities", {}) or {}
+                if not entities.get("source") or not entities.get("destination"):
+                    src, dst = self._infer_hosts_from_text(intent_text)
+                    if src and dst:
+                        entities["source"] = entities.get("source", src)
+                        entities["destination"] = entities.get("destination", dst)
+
                 analysis = IntentAnalysis(
                     intent_type=intent_type,
                     confidence=response_data.get("confidence", 0.5),
-                    extracted_entities=response_data.get("extracted_entities", {}),
+                    extracted_entities=entities,
                     suggested_actions=response_data.get("suggested_actions", []),
                     reasoning=response_data.get("reasoning", "")
                 )
@@ -355,39 +403,104 @@ Please analyze this intent and provide a structured response."""
         """
         start_time = time.time()
         
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # Prepare headers and payload based on API type
+        if self.is_ollama:
+            headers = {"Content-Type": "application/json"}
+            # Ollama API format
+            payload = {
+                "model": request.model,
+                "messages": [
+                    {"role": msg.role, "content": msg.content} 
+                    for msg in request.messages
+                ],
+                "stream": False,
+                "options": {
+                    "temperature": request.temperature,
+                    "num_predict": request.max_tokens
+                }
+            }
+            endpoint = "/api/chat"
+        elif self.is_gemini:
+            headers = {"Content-Type": "application/json"}
+            # Convert OpenAI format to Gemini format
+            gemini_messages = []
+            for msg in request.messages:
+                if msg.role == "system":
+                    # Gemini doesn't have system role, prepend to user message
+                    if gemini_messages and gemini_messages[-1]["role"] == "user":
+                        gemini_messages[-1]["parts"][0]["text"] = f"{msg.content}\n\n{gemini_messages[-1]['parts'][0]['text']}"
+                    else:
+                        # If no user message yet, create one
+                        gemini_messages.append({
+                            "role": "user",
+                            "parts": [{"text": msg.content}]
+                        })
+                else:
+                    gemini_messages.append({
+                        "role": msg.role,
+                        "parts": [{"text": msg.content}]
+                    })
+            
+            payload = {
+                "contents": gemini_messages,
+                "generationConfig": {
+                    "temperature": request.temperature,
+                    "maxOutputTokens": request.max_tokens,
+                    "topP": 0.8,
+                    "topK": 40
+                }
+            }
+            endpoint = f"/{request.model}:generateContent?key={self.api_key}"
+        else:
+            # OpenAI API format
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": request.model,
+                "messages": [
+                    {"role": msg.role, "content": msg.content} 
+                    for msg in request.messages
+                ],
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens
+            }
+            endpoint = "/chat/completions"
         
-        payload = {
-            "model": request.model,
-            "messages": [
-                {"role": msg.role, "content": msg.content} 
-                for msg in request.messages
-            ],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens
-        }
-        
-        async with httpx.AsyncClient(timeout=settings.intent_timeout) as client:
+        # Use longer timeout for local Ollama if configured, otherwise default intent timeout
+        client_timeout = settings.ollama_timeout if getattr(settings, 'ollama_timeout', None) and self.is_ollama else settings.intent_timeout
+        async with httpx.AsyncClient(timeout=client_timeout) as client:
             try:
                 response = await client.post(
-                    f"{self.base_url}/chat/completions",
+                    f"{self.base_url}{endpoint}",
                     headers=headers,
                     json=payload
                 )
                 response.raise_for_status()
                 
                 data = response.json()
-                content = data["choices"][0]["message"]["content"]
+                
+                # Extract content based on API type
+                if self.is_ollama:
+                    content = data.get("message", {}).get("content", "")
+                    # Ollama doesn't provide usage or finish_reason in the same format
+                    usage = {}
+                    finish_reason = "stop"
+                elif self.is_gemini:
+                    content = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    # Gemini doesn't provide usage or finish_reason in the same format
+                    usage = {}
+                    finish_reason = "stop"
+                else:
+                    content = data["choices"][0]["message"]["content"]
+                    usage = data.get("usage", {})
+                    finish_reason = data["choices"][0].get("finish_reason", "stop")
                 
                 # Check if content is empty or None
                 if not content or content.strip() == "":
                     logger.warning("LLM returned empty content")
                     content = "Empty response from LLM"
-                
-                usage = data.get("usage", {})
                 
                 response_time = int((time.time() - start_time) * 1000)
                 
@@ -395,7 +508,7 @@ Please analyze this intent and provide a structured response."""
                     content=content,
                     model=request.model,
                     usage=usage,
-                    finish_reason=data["choices"][0].get("finish_reason", "stop"),
+                    finish_reason=finish_reason,
                     response_time_ms=response_time
                 )
                 
@@ -450,8 +563,8 @@ Please analyze this intent and provide a structured response."""
             try:
                 # Clean the response first
                 cleaned_content = self._clean_json_response(response.content)
-                logger.info(f"Raw LLM response: {response.content}")
-                logger.info(f"Cleaned content: {cleaned_content}")
+                logger.debug(f"Raw LLM response: {response.content}")
+                logger.debug(f"Cleaned content: {cleaned_content}")
                 
                 # Check if cleaned content is empty or invalid
                 if not cleaned_content or cleaned_content.strip() == "" or cleaned_content.strip() == "{}":
@@ -490,8 +603,14 @@ Please analyze this intent and provide a structured response."""
     def _generate_flow_rule_prompt(self, intent_analysis, network_topology) -> str:
         """Generate specialized prompts for different intent types."""
         intent_type = intent_analysis.intent_type.lower()
-        topology_str = self._format_topology_for_llm(network_topology)
         entities = intent_analysis.extracted_entities
+        
+        # Extract source and destination for routing intents
+        source = entities.get("source")
+        destination = entities.get("destination")
+        
+        # Format topology with source and destination for routing intents
+        topology_str = self._format_topology_for_llm(network_topology, source, destination)
         
         if intent_type == "security":
             return self._generate_security_prompt(entities, topology_str)
@@ -519,12 +638,16 @@ NETWORK TOPOLOGY:
 {topology_str}
 
 REQUIREMENTS:
-1. Block traffic BIDIRECTIONALLY ({source}->{destination} AND {destination}->{source})
-2. Install rules on ALL switches that connect {source} and {destination}
-3. Use IP-based matching with exact IPs
-4. Use DROP action for blocking
-5. Set priority 1000+
-6. Use eth_type: 2048 for IPv4
+1. **CRITICAL**: Only use valid switch DPIDs: 1, 2, 3, 4 (NEVER use 5, 6, 7, 8, 9, 10)
+2. Block traffic BIDIRECTIONALLY ({source}->{destination} AND {destination}->{source})
+3. Install rules on ALL switches that connect {source} and {destination}
+4. Use IP-based matching with exact IPs
+5. **CRITICAL**: Use DROP action for blocking traffic
+6. Set priority 1000+  
+7. Use eth_type: 2048 for IPv4
+
+EXAMPLE DROP RULE:
+""" + '{"dpid": 1, "table_id": 0, "priority": 1000, "match": {"eth_type": 2048, "ipv4_src": "10.0.0.1", "ipv4_dst": "10.0.0.2"}, "actions": [{"type": "DROP"}], "idle_timeout": 0, "hard_timeout": 0}' + """
 
 FORMAT: Return ONLY a JSON array of flow rules, no other text.
 
@@ -532,28 +655,67 @@ RESPOND WITH ONLY THE JSON ARRAY:
 """
     
     def _generate_routing_prompt(self, entities, topology_str) -> str:
-        """Generate prompt for routing intents."""
-        source = entities.get("source", "h1")
-        destination = entities.get("destination", "h3")
+        """Generate enhanced prompt for routing intents with detailed topology analysis."""
+        source = entities.get("source")
+        destination = entities.get("destination")
+        if not source or not destination:
+            source = source or "hX"
+            destination = destination or "hY"
         optimization = entities.get("optimization", "shortest_path")
         
         return f"""
-You are an expert OpenFlow engineer. Generate OpenFlow rules for ROUTING optimization.
+You are an expert OpenFlow engineer and network path calculation specialist. Generate OpenFlow rules for ROUTING optimization.
 
 TASK: Route traffic from {source} to {destination} using {optimization}
 
 NETWORK TOPOLOGY:
 {topology_str}
 
-REQUIREMENTS:
-1. Calculate the shortest/fastest path from {source} to {destination}
-2. Install forwarding rules along the calculated path
-3. Set appropriate output ports for each switch
-4. Use higher priority (800+) to override default rules
-5. Use IP-based matching for specific host traffic
+PATH CALCULATION INSTRUCTIONS:
+1. **ANALYZE TOPOLOGY**: First understand the complete network topology including all switches, hosts, and inter-switch links
+2. **IDENTIFY HOST LOCATIONS**: Find which switch each host connects to based on the topology information
+3. **CHECK SAME-SWITCH CASE**: If both {source} and {destination} connect to the SAME switch, generate rules ONLY for that switch using host ports
+4. **CALCULATE SHORTEST PATH**: For different switches, use Dijkstra's algorithm to find the shortest path between source and destination switches
+5. **CONSIDER ALTERNATIVES**: If multiple paths exist, choose the one with fewer hops or better performance
+6. **VALIDATE PORTS**: Ensure the output ports in your rules match the actual inter-switch connections
 
-EXAMPLE ROUTING RULE:
-{{"dpid": 1, "table_id": 0, "priority": 800, "match": {{"eth_type": 2048, "ip_src": "10.0.0.1", "ip_dst": "10.0.0.3"}}, "actions": [{{"type": "OUTPUT", "port": 3}}], "idle_timeout": 300, "hard_timeout": 0}}
+REQUIREMENTS:
+1. **CRITICAL**: Only use valid switch DPIDs: 1, 2, 3, 4 (NEVER use 5, 6, 7, 8, 9, 10)
+2. **SAME-SWITCH DETECTION**: If {source} and {destination} are on the same switch, only generate rules for that switch
+3. **PATH ANALYSIS**: For different switches, calculate the exact path from {source} to {destination} through the network
+4. **BIDIRECTIONAL RULES**: Generate rules for both directions (source->destination AND destination->source)
+5. **PORT MAPPING**: Use correct output ports based on the topology links
+6. **PRIORITY**: Use priority 800+ to override default rules
+7. **IP MATCHING**: Use exact IP addresses for source and destination hosts
+
+SAME-SWITCH EXAMPLE:
+If h1 and h5 are both on switch s1 (DPID: 1):
+- h1 connects to port 1, h5 connects to port 2
+- Generate rules ONLY for switch 1
+- Forward: h1->h5 uses port 2, Reverse: h5->h1 uses port 1
+- DO NOT generate rules for other switches
+
+MULTI-HOP EXAMPLE:
+For h1->h3 routing (different switches):
+- h1 connects to switch s1 (DPID: 1)
+- h3 connects to switch s3 (DPID: 3)  
+- Path: s1 -> s2 -> s3 (via inter-switch links)
+- Generate rules for each switch along the path
+
+EXAMPLE SAME-SWITCH RULES (h1->h5 on s1):
+[
+  {{"dpid": 1, "table_id": 0, "priority": 800, "match": {{"eth_type": 2048, "ipv4_src": "10.0.0.1", "ipv4_dst": "10.0.0.5"}}, "actions": [{{"type": "OUTPUT", "port": 2}}], "idle_timeout": 300, "hard_timeout": 0}},
+  {{"dpid": 1, "table_id": 0, "priority": 800, "match": {{"eth_type": 2048, "ipv4_src": "10.0.0.5", "ipv4_dst": "10.0.0.1"}}, "actions": [{{"type": "OUTPUT", "port": 1}}], "idle_timeout": 300, "hard_timeout": 0}}
+]
+
+EXAMPLE MULTI-HOP RULES (h1->h3):
+[
+  {{"dpid": 1, "table_id": 0, "priority": 800, "match": {{"eth_type": 2048, "ipv4_src": "10.0.0.1", "ipv4_dst": "10.0.0.3"}}, "actions": [{{"type": "OUTPUT", "port": 3}}], "idle_timeout": 300, "hard_timeout": 0}},
+  {{"dpid": 2, "table_id": 0, "priority": 800, "match": {{"eth_type": 2048, "ipv4_src": "10.0.0.1", "ipv4_dst": "10.0.0.3"}}, "actions": [{{"type": "OUTPUT", "port": 4}}], "idle_timeout": 300, "hard_timeout": 0}},
+  {{"dpid": 3, "table_id": 0, "priority": 800, "match": {{"eth_type": 2048, "ipv4_src": "10.0.0.1", "ipv4_dst": "10.0.0.3"}}, "actions": [{{"type": "OUTPUT", "port": 1}}], "idle_timeout": 300, "hard_timeout": 0}}
+]
+
+CRITICAL: For same-switch communication, generate rules ONLY for that switch. Do not include rules for other switches.
 
 FORMAT: Return ONLY a JSON array of flow rules, no other text.
 
@@ -577,14 +739,15 @@ NETWORK TOPOLOGY:
 {topology_str}
 
 REQUIREMENTS:
-1. Create rules to identify {traffic_type} traffic on TCP port {port}
-2. Set priority {priority_value} for {priority} priority traffic
-3. Use queue actions or DSCP marking if available
-4. Install on all switches to ensure QoS throughout network
-5. Match both TCP source and destination ports
+1. **CRITICAL**: Only use valid switch DPIDs: 1, 2, 3, 4 (NEVER use 5, 6, 7, 8, 9, 10)
+2. Create rules to identify {traffic_type} traffic on TCP port {port}
+3. Set priority {priority_value} for {priority} priority traffic
+4. Use queue actions or DSCP marking if available
+5. Install on all switches to ensure QoS throughout network
+6. **CRITICAL**: Match only TCP destination port {port}, NOT source port (clients use random source ports)
 
 EXAMPLE QoS RULE:
-{{"dpid": 1, "table_id": 0, "priority": {priority_value}, "match": {{"eth_type": 2048, "ip_proto": 6, "tcp_dst": {port}}}, "actions": [{{"type": "SET_QUEUE", "queue_id": 1}}, {{"type": "OUTPUT", "port": "NORMAL"}}], "idle_timeout": 0, "hard_timeout": 0}}
+""" + '{"dpid": 1, "table_id": 0, "priority": 500, "match": {"eth_type": 2048, "ip_proto": 6, "tcp_dst": 80}, "actions": [{"type": "SET_QUEUE", "queue_id": 1}, {"type": "OUTPUT", "port": 1}], "idle_timeout": 0, "hard_timeout": 0}' + """
 
 FORMAT: Return ONLY a JSON array of flow rules, no other text.
 
@@ -605,109 +768,94 @@ NETWORK TOPOLOGY:
 {topology_str}
 
 REQUIREMENTS:
-1. Create monitoring rules to track {metric} usage
-2. Use low priority (100) to capture all traffic
-3. Forward to controller for statistics collection
-4. Install on all switches for comprehensive monitoring
-5. Use table-miss rules to catch all unmatched traffic
+1. **CRITICAL**: Only use valid switch DPIDs: 1, 2, 3, 4 (NEVER use 5, 6, 7, 8, 9, 10)
+2. Create monitoring rules to track {metric} usage
+3. Use low priority (100) to capture all traffic
+4. Forward to controller for statistics collection
+5. Install on all switches for comprehensive monitoring
+6. Use table-miss rules to catch all unmatched traffic
 
 EXAMPLE MONITORING RULE:
-{{"dpid": 1, "table_id": 0, "priority": 100, "match": {{}}, "actions": [{{"type": "OUTPUT", "port": "CONTROLLER"}}, {{"type": "OUTPUT", "port": "NORMAL"}}], "idle_timeout": 0, "hard_timeout": 0}}
+""" + '{"dpid": 1, "table_id": 0, "priority": 100, "match": {}, "actions": [{"type": "OUTPUT", "port": "CONTROLLER"}, {"type": "OUTPUT", "port": "NORMAL"}], "idle_timeout": 0, "hard_timeout": 0}' + """
 
 FORMAT: Return ONLY a JSON array of flow rules, no other text.
 
 RESPOND WITH ONLY THE JSON ARRAY:
 """
     
-    def _format_topology_for_llm(self, topology: NetworkTopology) -> str:
-        """Format network topology for LLM consumption."""
-        devices_info = []
+    def _format_topology_for_llm(self, topology: Any, source: str = None, destination: str = None) -> str:
+        """Format network topology information for LLM consumption."""
+        # Initialize host mappings
         host_mappings = {}
         host_ip_mappings = {}
         
-        # Process switches and their ports
+        # Process devices to build host mappings (deterministic, name-based only)
+        devices_info = []
         for device in topology.devices:
             if device.device_type.value == "switch":
-                device_info = f"Switch {device.name} (DPID: {device.dpid}):"
-                if device.ports:
-                    for port in device.ports:
-                        device_info += f"\n  - Port {port.port_no}: {port.name}"
-                        logger.info(f"Processing port {port.port_no}: {port.name} on switch {device.name}")
-                        # Extract host information from port names
-                        # Try multiple patterns for host port detection
-                        host_detected = False
-                        
-                        # Pattern 1: s1-eth1, s1-eth2 format (Mininet standard)
-                        if "eth" in port.name.lower() and "-" in port.name:
-                            logger.info(f"Found eth port: {port.name} on device {device.name}")
-                            port_parts = port.name.split('-')
-                            if len(port_parts) >= 2:
-                                switch_name = port_parts[0]
-                                eth_part = port_parts[1]
-                                if eth_part.startswith('eth'):
-                                    host_num = eth_part.replace('eth', '')
-                                    if host_num.isdigit():
-                                        # Only map if this is a host port (not inter-switch link)
-                                        # Based on Mininet topology:
-                                        # s1-eth1:h1, s1-eth2:h5 (host ports)
-                                        # s1-eth3:s2 (inter-switch link)
-                                        # s2-eth1:h2, s2-eth2:h4 (host ports)
-                                        # s2-eth3:s1, s2-eth4:s3 (inter-switch links)
-                                        # s3-eth1:h3, s3-eth2:h6 (host ports)
-                                        # s3-eth3:s2 (inter-switch link)
+                device_info = f"Switch {device.name} (DPID: {device.dpid}) with {len(device.ports)} ports"
+                
+                # Process each port to identify host connections
+                for port in device.ports:
+                    host_detected = False
+                    
+                    # Pattern 1: s1-eth1, s1-eth2 format (Mininet standard)
+                    if "eth" in port.name.lower() and "-" in port.name:
+                        port_parts = port.name.split('-')
+                        if len(port_parts) >= 2:
+                            switch_name = port_parts[0]
+                            eth_part = port_parts[1]
+                            if eth_part.startswith('eth'):
+                                host_num = eth_part.replace('eth', '')
+                                if host_num.isdigit():
+                                    # Check if this is a host port based on topology
+                                    is_host_port = False
+                                    host_name = None
+                                    if switch_name == "s1" and host_num == "1":  # s1 port 1 -> h1
+                                        is_host_port = True
+                                        host_name = "h1"
+                                    elif switch_name == "s1" and host_num == "2":  # s1 port 2 -> h5
+                                        is_host_port = True
+                                        host_name = "h5"
+                                    elif switch_name == "s2" and host_num == "1":  # s2 port 1 -> h2
+                                        is_host_port = True
+                                        host_name = "h2"
+                                    elif switch_name == "s2" and host_num == "2":  # s2 port 2 -> h4
+                                        is_host_port = True
+                                        host_name = "h4"
+                                    elif switch_name == "s3" and host_num == "1":  # s3 port 1 -> h3
+                                        is_host_port = True
+                                        host_name = "h3"
+                                    elif switch_name == "s4" and host_num == "1":  # s4 port 1 -> h6
+                                        is_host_port = True
+                                        host_name = "h6"
+                                    
+                                    if is_host_port and host_name:
                                         
-                                        # Check if this is a host port based on topology
-                                        is_host_port = False
-                                        if switch_name == "s1" and host_num in ["1", "2"]:  # s1-eth1:h1, s1-eth2:h5
-                                            is_host_port = True
-                                        elif switch_name == "s2" and host_num in ["1", "2"]:  # s2-eth1:h2, s2-eth2:h4
-                                            is_host_port = True
-                                        elif switch_name == "s3" and host_num in ["1", "2"]:  # s3-eth1:h3, s3-eth2:h6
-                                            is_host_port = True
-                                        
-                                        if is_host_port:
-                                            # Map host number to actual host name based on topology
-                                            if switch_name == "s1" and host_num == "1":
-                                                host_name = "h1"
-                                            elif switch_name == "s1" and host_num == "2":
-                                                host_name = "h5"
-                                            elif switch_name == "s2" and host_num == "1":
-                                                host_name = "h2"
-                                            elif switch_name == "s2" and host_num == "2":
-                                                host_name = "h4"
-                                            elif switch_name == "s3" and host_num == "1":
-                                                host_name = "h3"
-                                            elif switch_name == "s3" and host_num == "2":
-                                                host_name = "h6"
-                                            else:
-                                                host_name = f"h{host_num}"
-                                            
-                                            host_ip = f"10.0.0.{host_name[1]}"  # Extract number from h1, h2, etc.
-                                            # Map host to this switch
-                                            host_mappings[host_name] = device.dpid
-                                            host_ip_mappings[host_name] = host_ip
-                                            logger.info(f"Mapped {host_name} ({host_ip}) to switch {device.name} (DPID: {device.dpid})")
-                                            host_detected = True
-                        
-                        # Pattern 2: Check if port name contains host reference (e.g., "h1", "h2")
-                        if not host_detected:
-                            for i in range(1, 10):  # Check for h1 to h9
-                                host_pattern = f"h{i}"
-                                if host_pattern in port.name.lower():
-                                    host_name = f"h{i}"
-                                    host_ip = f"10.0.0.{i}"
-                                    host_mappings[host_name] = device.dpid
-                                    host_ip_mappings[host_name] = host_ip
-                                    logger.info(f"Mapped {host_name} ({host_ip}) to switch {device.name} via pattern matching")
-                                    host_detected = True
-                                    break
-                        
-                        # Pattern 3: Fallback by port number is unreliable and may misclassify inter-switch links
-                        # Disable naive port_no->host mapping to avoid false hosts and missing some hosts
-                        # Keep only explicit name-based detections above
-                        
-                        if not host_detected:
-                            logger.info(f"Port {port.name} not identified as host port")
+                                        host_ip = f"10.0.0.{host_name.replace('h', '')}"  # Extract number from h1, h2, etc.
+                                        # Map host to this switch
+                                        host_mappings[host_name] = device.dpid
+                                        host_ip_mappings[host_name] = host_ip
+                                        logger.info(f"Mapped {host_name} ({host_ip}) to switch {device.name} (DPID: {device.dpid})")
+                                        host_detected = True
+                    
+                    # Pattern 2: Check if port name contains host reference (e.g., "h1", "h2")
+                    if not host_detected:
+                        for i in range(1, 10):  # Check for h1 to h9
+                            host_pattern = f"h{i}"
+                            if host_pattern in port.name.lower():
+                                host_name = f"h{i}"
+                                host_ip = f"10.0.0.{i}"
+                                host_mappings[host_name] = device.dpid
+                                host_ip_mappings[host_name] = host_ip
+                                logger.info(f"Mapped {host_name} ({host_ip}) to switch {device.name} via pattern matching")
+                                host_detected = True
+                                break
+                    
+                    # Do not infer hosts from numeric port numbers to avoid false positives
+                    
+                    if not host_detected:
+                        logger.info(f"Port {port.name} not identified as host port")
                 devices_info.append(device_info)
             elif device.device_type.value == "host":
                 # Store host mappings for later use
@@ -721,7 +869,7 @@ RESPOND WITH ONLY THE JSON ARRAY:
                 f"Switch {link.src_dpid} Port {link.src_port_no} <-> Switch {link.dst_dpid} Port {link.dst_port_no}"
             )
         
-        # Build host-to-switch connections
+        # Build host-to-switch connections (for prompt context only)
         host_connections = []
         for device in topology.devices:
             if device.device_type.value == "switch":
@@ -781,13 +929,7 @@ RESPOND WITH ONLY THE JSON ARRAY:
                                     host_detected = True
                                     break
                     
-                    # Pattern 3: Port number corresponds to host number
-                    if not host_detected and port.port_no <= 6:
-                        host_name = f"h{port.port_no}"
-                        host_ip = f"10.0.0.{port.port_no}"
-                        if host_name in host_mappings and host_mappings[host_name] == device.dpid:
-                            host_connections.append(f"Host {host_name} ({host_ip}) -> Switch {device.name} (DPID: {device.dpid}) Port {port.port_no}")
-                            host_detected = True
+                    # Skip numeric port-to-host inference
         
         # Build detailed topology summary
         topology_str = f"""
@@ -805,11 +947,37 @@ HOST IP MAPPINGS:
 INTER-SWITCH LINKS:
 {chr(10).join(links_info) if links_info else "No inter-switch links"}
 
-FOR BLOCKING h1<->h2:
-- h1 (10.0.0.1) connects to Switch {host_mappings.get('h1', 'unknown')} (DPID: {host_mappings.get('h1', 'unknown')})
-- h2 (10.0.0.2) connects to Switch {host_mappings.get('h2', 'unknown')} (DPID: {host_mappings.get('h2', 'unknown')})
-- Install DROP rules on switches that connect h1 and h2 for bidirectional blocking
+SAME-SWITCH HOSTS:
+{chr(10).join([f"- Switch {device.name} (DPID: {device.dpid}) has hosts: {', '.join([host for host, dpid in host_mappings.items() if dpid == device.dpid])}" for device in topology.devices if device.device_type.value == "switch" and len([host for host, dpid in host_mappings.items() if dpid == device.dpid]) >= 2]) if any(len([host for host, dpid in host_mappings.items() if dpid == device.dpid]) >= 2 for device in topology.devices if device.device_type.value == "switch") else "None"}
+"""
+
+        # Add routing-specific information if source and destination are provided
+        if source and destination:
+            topology_str += f"""
+
+FOR ROUTING {source}<->{destination}:
+- {source} (10.0.0.{source[1:]}) connects to Switch {host_mappings.get(source, 'unknown')} (DPID: {host_mappings.get(source, 'unknown')})
+- {destination} (10.0.0.{destination[1:]}) connects to Switch {host_mappings.get(destination, 'unknown')} (DPID: {host_mappings.get(destination, 'unknown')})
+- If same switch: Generate rules ONLY for that switch
+- If different switches: Calculate shortest path and generate rules for each switch along the path
 """
         
         logger.info(f"Formatted topology for LLM with {len(host_mappings)} hosts and {len(links_info)} links")
-        return topology_str 
+        return topology_str
+
+    def _infer_hosts_from_text(self, intent_text: str):
+        """Infer source/destination hosts like h1/h2 from free text."""
+        try:
+            import re
+            text = intent_text.lower()
+            # common patterns: "h1 to h3", "h2 reach h4", "allow h5 -> h6"
+            m = re.search(r"h(\d+)\s*(?:->|to|reach|communicat[e|ion]*\s*with)\s*h(\d+)", text)
+            if m:
+                return f"h{m.group(1)}", f"h{m.group(2)}"
+            # fallback: first two host tokens in text
+            hosts = re.findall(r"h(\d+)", text)
+            if len(hosts) >= 2:
+                return f"h{hosts[0]}", f"h{hosts[1]}"
+        except Exception:
+            pass
+        return None, None

@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.1
     llm_max_tokens: int = 1000
     
+    # Ollama Configuration (for local models)
+    ollama_host: str = "127.0.0.1"
+    ollama_port: int = 11434
+    use_ollama: bool = False
+    ollama_timeout: int = 120
+    
+    # Gemini Configuration (for Gemini API)
+    gemini_api_key: str = ""
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_model: str = "gemini-1.5-flash"
+    use_gemini: bool = True
+    
     # Network Configuration
     mininet_host: str = "127.0.0.1"
     mininet_port: int = 6653
@@ -61,6 +73,24 @@ class Settings(BaseSettings):
         if v.upper() not in valid_levels:
             raise ValueError(f"Log level must be one of {valid_levels}")
         return v.upper()
+    
+    @property
+    def llm_base_url(self) -> str:
+        """Get the appropriate LLM base URL based on configuration."""
+        if self.use_ollama:
+            return f"http://{self.ollama_host}:{self.ollama_port}"
+        elif self.use_gemini:
+            return self.gemini_base_url
+        return self.openai_base_url
+    
+    @property
+    def llm_model_name(self) -> str:
+        """Get the appropriate model name based on configuration."""
+        if self.use_ollama:
+            return "llama3.2:latest"  # Default Ollama model
+        elif self.use_gemini:
+            return self.gemini_model
+        return self.llm_model
     
     class Config:
         """Pydantic config."""

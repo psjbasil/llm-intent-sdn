@@ -25,6 +25,7 @@ class IntentStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    DELETED = "deleted"
 
 
 class IntentRequest(BaseModel):
